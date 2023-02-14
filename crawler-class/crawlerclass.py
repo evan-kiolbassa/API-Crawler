@@ -2,6 +2,8 @@ import requests
 from sortedcontainers import SortedDict
 import multiprocessing as mp
 from requests.exceptions import HTTPError, RequestException
+import json
+from time import time
 
 class API_Crawler:
     def __init__(self, api_key):
