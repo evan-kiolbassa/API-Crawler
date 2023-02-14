@@ -1,7 +1,7 @@
 import requests
 from sortedcontainers import SortedDict
 import multiprocessing as mp
-
+from requests.exceptions import HTTPError, RequestException
 
 class API_Crawler:
     def __init__(self, api_key):
@@ -11,14 +11,18 @@ class API_Crawler:
         self.headers = {'Content-Type': 'application/json'}
         self.category_ids = SortedDict()
 
-    def crawl(self, category_id, parent_id=None):
-        """
+    def crawl(self, category_id, parent_id=None, retries=3, retry_delay=1):
+        '''
         Recursively crawl the EIA API and store the resulting series IDs in a B-tree.
-
         Parameters:
         category_id (int): ID of the category to crawl.
         parent_id (int): ID of the parent category. Used for recursive crawling.
-        """
+        retries (int): Number of times to retry the request if an error occurs.
+        retry_delay (int): Delay in seconds between retries.
+        Raises:
+        requests.exceptions.HTTPError: If the API returns an error response or a response in an unexpected format.
+        requests.exceptions.RequestException: If a network error occurs.
+        '''
         if parent_id is None:
             self.category_ids.clear()
         else:
@@ -28,17 +32,39 @@ class API_Crawler:
             'api_key': self.api_key,
             'category_id': category_id
         }
-        response = self.session.get(self.base_url + 'category/', headers=self.headers, params=payload)
-        response.raise_for_status()
-        category = response.json()['category']
 
-        if 'childcategories' in category:
-            for child in category['childcategories']:
-                self.crawl(child['category_id'], category_id)
+        for i in range(retries):
+            try:
+                response = self.session.get(self.base_url + 'category/', headers=self.headers, params=payload)
+                response.raise_for_status()
+                category = response.json()['category']
+            except requests.exceptions.HTTPError as e:
+                print(f"Error while fetching category {category_id}: {e}")
+                if response.status_code == 429:
+                    print(f"Rate limit reached. Retrying in {retry_delay} seconds.")
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    raise
+            except (json.JSONDecodeError, KeyError) as e:
+                print(f"Error while parsing response for category {category_id}: {e}")
+                raise
+            except requests.exceptions.RequestException as e:
+                print(f"Error while fetching category {category_id}: {e}")
+                if i < retries - 1:
+                    print(f"Retrying in {retry_delay} seconds.")
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    raise
 
-        if 'childseries' in category:
-            for series in category['childseries']:
-                self.category_ids[parent_id][series['series_id']] = None
+            if 'childcategories' in category:
+                for child in category['childcategories']:
+                    self.crawl(child['category_id'], category_id, retries=retries, retry_delay=retry_delay)
+
+            if 'childseries' in category:
+                for series in category['childseries']:
+                    self.category_ids[parent_id][series['series_id']] = None
 
     def search(self, keyword):
         """
